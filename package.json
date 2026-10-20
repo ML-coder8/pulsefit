@@ -1,0 +1,11 @@
+{
+  "name": "pulsefit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PulseFit - nutrition and weight companion",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
+    "zod": "^3.25.76"
+  }
+}
