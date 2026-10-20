@@ -1,1 +1,7 @@
 node_modules/
+
+# Local environment - holds the Anthropic API key, never commit
+.env
+
+# Netlify CLI state
+.netlify/
