@@ -1,0 +1,15 @@
+# Netlify build + function configuration for PulseFit.
+# The app itself is a static single-page file, so there is no build step:
+# we publish the repository root as-is and let Netlify bundle the functions.
+
+[build]
+  publish = "."
+  functions = "netlify/functions"
+  command = ""
+
+[functions]
+  node_bundler = "esbuild"
+
+# Vision analysis can take a few seconds on a large photo.
+[functions."analyze-food"]
+  included_files = []

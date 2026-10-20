@@ -609,6 +609,20 @@
         </div>
       </div>
 
+      <!-- Scan Failure Notice -->
+      <div id="scanFailureCard" class="hidden mt-3 bg-amber-50 border border-amber-300 rounded-2xl p-4">
+        <div class="flex items-start gap-2.5">
+          <i class="fa-solid fa-triangle-exclamation text-amber-500 text-base mt-0.5"></i>
+          <div>
+            <h4 class="text-sm font-extrabold text-stone-900">Could not analyse this photo</h4>
+            <p id="scanFailureReason" class="text-[11px] text-stone-600 font-medium mt-0.5">--</p>
+            <p class="text-[11px] text-stone-500 mt-1.5">
+              Pick a sample dish above, or search the database below, to log something now.
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Result Card -->
       <div id="analysisResultCard" class="hidden mt-3 bg-orange-50/80 border border-orange-200 rounded-2xl p-4">
         <div class="flex justify-between items-start">
@@ -1398,6 +1412,7 @@
     function resetScannerState() {
       document.getElementById('scanPreviewContainer').classList.add('hidden');
       document.getElementById('analysisResultCard').classList.add('hidden');
+      document.getElementById('scanFailureCard').classList.add('hidden');
       document.getElementById('foodPhotoInput').value = '';
       document.getElementById('dbSearchInput').value = '';
       document.getElementById('dbSearchResultsContainer').innerHTML = '';
@@ -1433,50 +1448,126 @@
       executeScanningSequence(item, 97);
     }
 
+    const ANALYZE_ENDPOINT = '/.netlify/functions/analyze-food';
+
+    // Human-readable reasons for the endpoint's error codes. Anything not listed
+    // falls back to a generic message.
+    const SCAN_ERROR_MESSAGES = {
+      missing_api_key: 'The scanner is not configured on this site yet (no API key set).',
+      image_too_large: 'That photo is larger than 5 MB. Try a smaller one.',
+      unsupported_media_type: 'That image format is not supported. Use JPEG, PNG, WebP or GIF.',
+      rate_limited: 'The scanner is rate limited right now. Try again in a moment.',
+      upstream_unreachable: 'Could not reach the scanner. Check your connection.',
+      upstream_error: 'The scanner returned an error. Try again in a moment.',
+      analysis_failed: 'The scanner failed unexpectedly. Try again in a moment.',
+      refused: 'The scanner declined to analyse this image.'
+    };
+
     function handleImageFileSelection(e) {
       const file = e.target.files[0];
       if (!file) return;
 
       const reader = new FileReader();
       reader.onload = function(evt) {
-        const preview = document.getElementById('imagePreviewElement');
-        preview.src = evt.target.result;
-
-        const nameLower = file.name.toLowerCase();
-        let matched = FOOD_DATABASE.find(item => 
-          item.keywords.some(k => nameLower.includes(k))
-        );
-
-        if (!matched) {
-          const hash = file.name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-          matched = FOOD_DATABASE[hash % FOOD_DATABASE.length];
-        }
-
-        executeScanningSequence(matched, 95);
+        document.getElementById('imagePreviewElement').src = evt.target.result;
+        analyzeFoodPhoto(evt.target.result, file.name);
       };
       reader.readAsDataURL(file);
     }
 
-    function executeScanningSequence(foodItem, confidence) {
+    // Posts the photo to the vision endpoint and renders the result. If the
+    // endpoint is unavailable the scanner degrades to a sample dish rather than
+    // leaving the user staring at a spinner.
+    async function analyzeFoodPhoto(imageDataUrl, fileName) {
+      startScanAnimation();
+
+      try {
+        const response = await fetch(ANALYZE_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageDataUrl })
+        });
+
+        const payload = await response.json();
+
+        if (!response.ok) {
+          const reason = SCAN_ERROR_MESSAGES[payload.error] || 'Scan failed - showing a sample estimate';
+
+          // A photo with no food in it is a definitive answer, not a failure to
+          // work around, so stop rather than inventing a dish.
+          if (payload.error === 'not_food') {
+            stopScanAnimation();
+            showScanFailure(payload.saw
+              ? `No food or drink detected - this looks like ${payload.saw}.`
+              : 'No food or drink was detected in this photo.');
+            return;
+          }
+
+          throw new Error(reason);
+        }
+
+        stopScanAnimation();
+        showScanFailure(null);
+        renderScanResult(payload, payload.confidence);
+      } catch (err) {
+        console.error('Food scan failed', err);
+        stopScanAnimation();
+        showScanFailure(err.message || 'The scanner could not be reached.');
+      }
+    }
+
+    // Shows or clears the failure panel. Passing null hides it.
+    //
+    // A failed scan deliberately shows nothing in the result card. An earlier
+    // version substituted a dish from FOOD_DATABASE, which presented a wrong
+    // answer under an "AI Match" badge - worse than showing no answer at all.
+    function showScanFailure(reason) {
+      const card = document.getElementById('scanFailureCard');
+      if (!reason) {
+        card.classList.add('hidden');
+        return;
+      }
+      document.getElementById('analysisResultCard').classList.add('hidden');
+      document.getElementById('scanFailureReason').innerText = reason;
+      card.classList.remove('hidden');
+      pendingScannedFood = null;
+    }
+
+    function startScanAnimation() {
+      document.getElementById('scanFailureCard').classList.add('hidden');
       document.getElementById('scanPreviewContainer').classList.remove('hidden');
       document.getElementById('scannerLaserBar').classList.remove('hidden');
       document.getElementById('scannerStatusBadge').classList.remove('hidden');
       document.getElementById('analysisResultCard').classList.add('hidden');
+    }
 
+    function stopScanAnimation() {
+      document.getElementById('scannerLaserBar').classList.add('hidden');
+      document.getElementById('scannerStatusBadge').classList.add('hidden');
+    }
+
+    // Shared by the real scanner and the sample-dish shortcut. Expects the
+    // cals/protein/carbs/fat field names used by FOOD_DATABASE entries.
+    function renderScanResult(foodItem, confidence) {
+      pendingScannedFood = foodItem;
+      document.getElementById('detectedConfidenceBadge').innerText = `${confidence}% AI Match`;
+      document.getElementById('detectedFoodName').innerText = foodItem.name;
+      document.getElementById('detectedServingWeight').innerText = `Estimated portion: ${foodItem.serving}`;
+      document.getElementById('detectedCalories').innerText = foodItem.cals;
+      document.getElementById('detectedProtein').innerText = `${foodItem.protein}g`;
+      document.getElementById('detectedCarbs').innerText = `${foodItem.carbs}g`;
+      document.getElementById('detectedFats').innerText = `${foodItem.fat}g`;
+
+      document.getElementById('analysisResultCard').classList.remove('hidden');
+    }
+
+    // Used by the labelled sample dishes, whose nutrition is already known -
+    // the delay only exists so the scan animation stays visible.
+    function executeScanningSequence(foodItem, confidence) {
+      startScanAnimation();
       setTimeout(() => {
-        document.getElementById('scannerLaserBar').classList.add('hidden');
-        document.getElementById('scannerStatusBadge').classList.add('hidden');
-
-        pendingScannedFood = foodItem;
-        document.getElementById('detectedConfidenceBadge').innerText = `${confidence}% AI Match`;
-        document.getElementById('detectedFoodName').innerText = foodItem.name;
-        document.getElementById('detectedServingWeight').innerText = `Estimated portion: ${foodItem.serving}`;
-        document.getElementById('detectedCalories').innerText = foodItem.cals;
-        document.getElementById('detectedProtein').innerText = `${foodItem.protein}g`;
-        document.getElementById('detectedCarbs').innerText = `${foodItem.carbs}g`;
-        document.getElementById('detectedFats').innerText = `${foodItem.fat}g`;
-
-        document.getElementById('analysisResultCard').classList.remove('hidden');
+        stopScanAnimation();
+        renderScanResult(foodItem, confidence);
       }, 1000);
     }
 
